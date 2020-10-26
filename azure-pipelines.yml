@@ -1,42 +1,104 @@
+
 # Maven
 # Build your Java project and run tests with Apache Maven.
 # Add steps that analyze code, save build artifacts, deploy, and more:
 # https://docs.microsoft.com/azure/devops/pipelines/languages/java
 
 trigger:
-- master
+- UPDATE_ME__BRANCH_NAME_COMES_HERE
+# pool: 'ssp-npe-agent'
+pool: 
+  name: "ssp-npe-agent"
+  demands: Agent.Name -equals npesspdpa003-npesspagent01
+  
+variables:
+- group: CITSEL-COMMON-VG
 
-pool:
-  vmImage: 'ubuntu-latest'
+- name: repoName
+  value: ""
+- name: branchName
+  value: "$(Build.SourceBranchName)"
 
-steps:
-- task: Maven@3
-  inputs:
-    mavenPomFile: 'pom.xml'
-    mavenOptions: '-Xmx3072m'
-    javaHomeOption: 'JDKVersion'
-    jdkVersionOption: '1.8'
-    jdkArchitectureOption: 'x64'
-    publishJUnitResults: true
-    testResultsFiles: '**/surefire-reports/TEST-*.xml'
-    goals: 'package'
-    checkStyleRunAnalysis: 
-- task: ArtifactoryPublishBuildInfo@1
-  inputs:
-    artifactoryService: 'Jfrog'
-    buildName: '$(Build.DefinitionName)'
-    buildNumber: '$(Build.BuildNumber)' 
-- task: ArtifactoryXrayScan@1
-  inputs:
-    artifactoryService: 'Jfrog'
-    buildName: '$(Build.DefinitionName)'
-    buildNumber: '$(Build.BuildNumber)'
-    allowFailBuild: true
+- name: tag
+  value: '$(Build.BuildId)' 
+jobs:
+- job: "MicroService"
+  cancelTimeoutInMinutes: 60
+  steps:
+  - task: Bash@3
+    inputs:
+      targetType: 'inline'
+      script: |
+        echo 'HOSTNAME custom'
+        echo $HOSTNAME
+  - powershell: |
+      java -version
+      write-host "Initilize Variables."
+      $reponameps ="$(Build.Repository.Name)".Replace("RogersCommunications/","").ToLower()
+      write-host "##vso[task.setvariable variable=repoName]$reponameps"
+  - task: Bash@3
+    displayName: 'Delete Local Docker Images of this Service'
+    inputs:
+      filePath: '$(System.DefaultWorkingDirectory)/azurebuild/cleanupLocalDockerImages.sh'
+      arguments: '$(repoName)'
+  - task: Gradle@2
+    inputs:
+      gradleWrapperFile: 'gradlew'
+      tasks: 'build'
+      javaHomeOption: 'path'
+      # options: -x test 
+      # options: '--refresh-dependencies'
+      jdkVersionOption: '1.11'
+      jdkArchitectureOption: 'x64'
+      jdkDirectory: '/usr/lib/jvm/java-11-openjdk-11.0.7.10-4.el7_8.x86_64/'
+      publishJUnitResults: true
+      testResultsFiles: '**/TEST-*.xml'
+      sonarQubeRunAnalysis: false
 
-- task: PowerShell@2
-  inputs:
-    targetType: 'inline'
-    script: |
-      # Write your PowerShell commands here.
-      
-      Write-Host "Hello World"
+  - task: PowerShell@2
+    displayName: 'Create Docker File'
+    inputs:
+      filePath: '$(System.DefaultWorkingDirectory)/azurebuild/createDockerFile.ps1'
+  - task: PowerShell@2
+    displayName: 'Create Sonarqube File'
+    inputs:
+      filePath: '$(System.DefaultWorkingDirectory)/azurebuild/createSonarqubeFile.ps1'
+  - task: SonarQubePrepare@4
+    inputs:
+      SonarQube: 'CITSEL-SONARQUBE-SC'
+      scannerMode: 'CLI'
+      configMode: 'file'
+  - task: SonarQubeAnalyze@4
+  - task: SonarQubePublish@4
+    inputs:
+      pollingTimeoutSec: '300'
+  - task: PowerShell@2
+    displayName: 'Build Image'
+    inputs:
+      filePath: '$(System.DefaultWorkingDirectory)/azurebuild/dockerBuild.ps1'
+      arguments: '-jfrogUserName $(JFROG_MIRROR_REPO_USER_NAME) -jfrogPassword $(JFROG_MIRROR_REPO_PASSWORD)'
+  - task: Docker@2
+    displayName: 'JFROG Login'
+    inputs:
+      containerRegistry: 'CITSEL-JFROG-SC'
+      command: 'login'
+  - task: Docker@2
+    displayName: 'Push Image to JFrog'
+    inputs:
+      containerRegistry: 'CITSEL-JFROG-SC'
+      repository: 'aks-$(repoName)'
+      command: 'push'
+      tags: '$(Build.BuildNumber)'
+      addPipelineData: false
+  - task: Docker@2
+    displayName: 'JFROG Logout'
+    inputs:
+      containerRegistry: 'CITSEL-JFROG-SC'
+      command: 'logout'
+    condition: always()
+  - task: Bash@3
+    displayName: 'Delete Local Docker Images of this Service'
+    inputs:
+      filePath: '$(System.DefaultWorkingDirectory)/azurebuild/cleanupLocalDockerImages.sh'
+      arguments: '$(repoName)'
+    condition: always()
